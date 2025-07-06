@@ -242,3 +242,157 @@
 (define-read-only (get-contract-owner)
   contract-owner
 )
+
+(define-map certificate-templates
+  uint
+  {
+    template-name: (string-ascii 100),
+    course-name: (string-ascii 100),
+    institution: (string-ascii 100),
+    course-duration: uint,
+    requirements: (string-ascii 200),
+    credit-hours: uint,
+    issuer: principal,
+    is-active: bool,
+    created-at: uint
+  }
+)
+
+(define-map template-usage
+  uint
+  uint
+)
+
+(define-data-var last-template-id uint u0)
+
+(define-public (create-certificate-template 
+  (template-name (string-ascii 100))
+  (course-name (string-ascii 100))
+  (institution (string-ascii 100))
+  (course-duration uint)
+  (requirements (string-ascii 200))
+  (credit-hours uint)
+)
+  (let
+    (
+      (template-id (+ (var-get last-template-id) u1))
+      (issuer-info (map-get? authorized-issuers tx-sender))
+    )
+    (asserts! (is-some issuer-info) err-invalid-issuer)
+    (asserts! (get is-active (unwrap-panic issuer-info)) err-unauthorized)
+    
+    (map-set certificate-templates
+      template-id
+      {
+        template-name: template-name,
+        course-name: course-name,
+        institution: institution,
+        course-duration: course-duration,
+        requirements: requirements,
+        credit-hours: credit-hours,
+        issuer: tx-sender,
+        is-active: true,
+        created-at: stacks-block-height
+      }
+    )
+    
+    (map-set template-usage template-id u0)
+    (var-set last-template-id template-id)
+    (ok template-id)
+  )
+)
+
+(define-public (toggle-template-status (template-id uint))
+  (let
+    (
+      (template-data (map-get? certificate-templates template-id))
+    )
+    (asserts! (is-some template-data) err-not-found)
+    (let
+      (
+        (template-info (unwrap-panic template-data))
+      )
+      (asserts! (is-eq tx-sender (get issuer template-info)) err-unauthorized)
+      
+      (ok (map-set certificate-templates
+        template-id
+        (merge template-info {is-active: (not (get is-active template-info))})
+      ))
+    )
+  )
+)
+
+(define-public (issue-certificate-from-template
+  (template-id uint)
+  (recipient principal)
+  (expiry-date (optional uint))
+  (grade (optional (string-ascii 10)))
+  (certificate-hash (string-ascii 64))
+)
+  (let
+    (
+      (template-data (map-get? certificate-templates template-id))
+      (certificate-id (+ (var-get last-certificate-id) u1))
+    )
+    (asserts! (is-some template-data) err-not-found)
+    (let
+      (
+        (template-info (unwrap-panic template-data))
+      )
+      (asserts! (is-eq tx-sender (get issuer template-info)) err-unauthorized)
+      (asserts! (get is-active template-info) err-unauthorized)
+      (asserts! (is-none (map-get? certificate-verification certificate-hash)) err-already-exists)
+      
+      (try! (nft-mint? certificate certificate-id recipient))
+      
+      (map-set certificates
+        certificate-id
+        {
+          recipient: recipient,
+          issuer: tx-sender,
+          course-name: (get course-name template-info),
+          institution: (get institution template-info),
+          issue-date: stacks-block-height,
+          expiry-date: expiry-date,
+          grade: grade,
+          certificate-hash: certificate-hash,
+          is-revoked: false
+        }
+      )
+      
+      (map-set issuer-certificates
+        {issuer: tx-sender, cert-id: certificate-id}
+        true
+      )
+      
+      (map-set recipient-certificates
+        {recipient: recipient, cert-id: certificate-id}
+        true
+      )
+      
+      (map-set certificate-verification certificate-hash certificate-id)
+      
+      (let
+        (
+          (current-usage (default-to u0 (map-get? template-usage template-id)))
+        )
+        (map-set template-usage template-id (+ current-usage u1))
+      )
+      
+      (var-set last-certificate-id certificate-id)
+      (ok certificate-id)
+    )
+  )
+)
+
+(define-read-only (get-certificate-template (template-id uint))
+  (map-get? certificate-templates template-id)
+)
+
+(define-read-only (get-template-usage-count (template-id uint))
+  (default-to u0 (map-get? template-usage template-id))
+)
+
+(define-read-only (get-last-template-id)
+  (var-get last-template-id)
+)
