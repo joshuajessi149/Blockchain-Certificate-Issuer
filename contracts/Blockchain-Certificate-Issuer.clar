@@ -6,6 +6,10 @@
 (define-constant err-invalid-issuer (err u104))
 (define-constant err-certificate-revoked (err u105))
 
+(define-constant err-invalid-endorser (err u106))
+(define-constant err-self-endorsement (err u107))
+(define-constant err-already-endorsed (err u108))
+
 (define-non-fungible-token certificate uint)
 
 (define-data-var last-certificate-id uint u0)
@@ -395,4 +399,107 @@
 
 (define-read-only (get-last-template-id)
   (var-get last-template-id)
+)
+
+
+(define-map certified-endorsers
+  principal
+  {
+    profession: (string-ascii 50),
+    organization: (string-ascii 100),
+    verified-at: uint,
+    endorsement-count: uint,
+    is-active: bool
+  }
+)
+
+(define-map certificate-endorsements
+  {cert-id: uint, endorser: principal}
+  {
+    endorsement-text: (string-ascii 200),
+    skill-rating: uint,
+    endorsed-at: uint,
+    endorser-profession: (string-ascii 50)
+  }
+)
+
+(define-map endorsement-counts
+  uint
+  uint
+)
+
+(define-public (authorize-endorser 
+  (endorser principal) 
+  (profession (string-ascii 50)) 
+  (organization (string-ascii 100))
+)
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (ok (map-set certified-endorsers
+      endorser
+      {
+        profession: profession,
+        organization: organization,
+        verified-at: stacks-block-height,
+        endorsement-count: u0,
+        is-active: true
+      }
+    ))
+  )
+)
+
+(define-public (endorse-certificate 
+  (certificate-id uint)
+  (endorsement-text (string-ascii 200))
+  (skill-rating uint)
+)
+  (let
+    (
+      (certificate-data (map-get? certificates certificate-id))
+      (endorser-info (map-get? certified-endorsers tx-sender))
+      (endorsement-key {cert-id: certificate-id, endorser: tx-sender})
+    )
+    (asserts! (is-some certificate-data) err-not-found)
+    (asserts! (is-some endorser-info) err-invalid-endorser)
+    (asserts! (get is-active (unwrap-panic endorser-info)) err-unauthorized)
+    (asserts! (<= skill-rating u10) err-unauthorized)
+    (asserts! (> skill-rating u0) err-unauthorized)
+    (asserts! (not (is-eq tx-sender (get recipient (unwrap-panic certificate-data)))) err-self-endorsement)
+    (asserts! (is-none (map-get? certificate-endorsements endorsement-key)) err-already-endorsed)
+    
+    (map-set certificate-endorsements
+      endorsement-key
+      {
+        endorsement-text: endorsement-text,
+        skill-rating: skill-rating,
+        endorsed-at: stacks-block-height,
+        endorser-profession: (get profession (unwrap-panic endorser-info))
+      }
+    )
+    
+    (let
+      (
+        (current-count (default-to u0 (map-get? endorsement-counts certificate-id)))
+        (endorser-data (unwrap-panic endorser-info))
+      )
+      (map-set endorsement-counts certificate-id (+ current-count u1))
+      (map-set certified-endorsers
+        tx-sender
+        (merge endorser-data {endorsement-count: (+ (get endorsement-count endorser-data) u1)})
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-certificate-endorsements (certificate-id uint))
+  (map-get? endorsement-counts certificate-id)
+)
+
+(define-read-only (get-specific-endorsement (certificate-id uint) (endorser principal))
+  (map-get? certificate-endorsements {cert-id: certificate-id, endorser: endorser})
+)
+
+(define-read-only (get-endorser-info (endorser principal))
+  (map-get? certified-endorsers endorser)
 )
