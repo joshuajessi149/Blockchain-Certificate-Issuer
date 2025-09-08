@@ -10,6 +10,14 @@
 (define-constant err-self-endorsement (err u107))
 (define-constant err-already-endorsed (err u108))
 
+(define-constant reward-first-certificate u1000000)
+(define-constant reward-milestone-five u2000000)
+(define-constant reward-milestone-ten u5000000)
+(define-constant reward-multi-institution u3000000)
+(define-constant reward-same-issuer-streak u1500000)
+
+(define-data-var reward-pool uint u0)
+
 (define-non-fungible-token certificate uint)
 
 (define-data-var last-certificate-id uint u0)
@@ -502,4 +510,106 @@
 
 (define-read-only (get-endorser-info (endorser principal))
   (map-get? certified-endorsers endorser)
+)
+
+
+(define-map recipient-achievements
+  principal
+  {
+    total-certificates: uint,
+    unique-issuers: uint,
+    same-issuer-streak: uint,
+    last-streak-issuer: principal,
+    total-rewards-earned: uint,
+    unclaimed-rewards: uint
+  }
+)
+
+(define-map achievement-milestones
+  {recipient: principal, milestone-type: (string-ascii 20)}
+  bool
+)
+
+(define-public (fund-reward-pool)
+  (let
+    (
+      (amount (stx-get-balance tx-sender))
+    )
+    (asserts! (> amount u0) (err u200))
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (var-set reward-pool (+ (var-get reward-pool) amount))
+    (ok amount)
+  )
+)
+
+(define-private (calculate-certificate-rewards (recipient principal) (issuer principal))
+  (let
+    (
+      (current-achievements (default-to 
+        {total-certificates: u0, unique-issuers: u0, same-issuer-streak: u0, 
+         last-streak-issuer: tx-sender, total-rewards-earned: u0, unclaimed-rewards: u0}
+        (map-get? recipient-achievements recipient)
+      ))
+      (new-total (+ (get total-certificates current-achievements) u1))
+      (is-new-issuer (not (is-eq issuer (get last-streak-issuer current-achievements))))
+      (new-unique-count (if is-new-issuer 
+        (+ (get unique-issuers current-achievements) u1) 
+        (get unique-issuers current-achievements)))
+      (new-streak (if is-new-issuer u1 (+ (get same-issuer-streak current-achievements) u1)))
+    )
+    (let
+      (
+        (rewards (+ 
+          (if (is-eq new-total u1) reward-first-certificate u0)
+          (if (is-eq new-total u5) reward-milestone-five u0)
+          (if (is-eq new-total u10) reward-milestone-ten u0)
+          (if (and is-new-issuer (> new-unique-count u3)) reward-multi-institution u0)
+          (if (is-eq new-streak u3) reward-same-issuer-streak u0)
+        ))
+      )
+      (map-set recipient-achievements
+        recipient
+        {
+          total-certificates: new-total,
+          unique-issuers: new-unique-count,
+          same-issuer-streak: new-streak,
+          last-streak-issuer: issuer,
+          total-rewards-earned: (+ (get total-rewards-earned current-achievements) rewards),
+          unclaimed-rewards: (+ (get unclaimed-rewards current-achievements) rewards)
+        }
+      )
+      rewards
+    )
+  )
+)
+
+(define-public (claim-achievement-rewards)
+  (let
+    (
+      (achievements (map-get? recipient-achievements tx-sender))
+    )
+    (asserts! (is-some achievements) (err u201))
+    (let
+      (
+        (unclaimed (get unclaimed-rewards (unwrap-panic achievements)))
+      )
+      (asserts! (> unclaimed u0) (err u202))
+      (asserts! (>= (var-get reward-pool) unclaimed) (err u203))
+      (try! (as-contract (stx-transfer? unclaimed tx-sender tx-sender)))
+      (var-set reward-pool (- (var-get reward-pool) unclaimed))
+      (map-set recipient-achievements
+        tx-sender
+        (merge (unwrap-panic achievements) {unclaimed-rewards: u0})
+      )
+      (ok unclaimed)
+    )
+  )
+)
+
+(define-read-only (get-recipient-achievements (recipient principal))
+  (map-get? recipient-achievements recipient)
+)
+
+(define-read-only (get-reward-pool-balance)
+  (var-get reward-pool)
 )
