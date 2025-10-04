@@ -613,3 +613,99 @@
 (define-read-only (get-reward-pool-balance)
   (var-get reward-pool)
 )
+
+(define-map skill-pathways
+  uint
+  {
+    pathway-name: (string-ascii 100),
+    description: (string-ascii 200),
+    issuer: principal,
+    total-certificates: uint,
+    is-active: bool,
+    created-at: uint
+  }
+)
+
+(define-map pathway-certificates
+  {pathway-id: uint, position: uint}
+  {
+    course-name: (string-ascii 100),
+    is-required: bool,
+    prerequisite-position: (optional uint)
+  }
+)
+
+(define-map recipient-pathway-progress
+  {recipient: principal, pathway-id: uint}
+  {
+    enrolled-at: uint,
+    completed-positions: (list 10 uint),
+    is-completed: bool,
+    completion-date: (optional uint)
+  }
+)
+
+(define-data-var last-pathway-id uint u0)
+
+(define-public (create-skill-pathway 
+  (pathway-name (string-ascii 100))
+  (description (string-ascii 200))
+  (total-certificates uint)
+)
+  (let
+    (
+      (pathway-id (+ (var-get last-pathway-id) u1))
+      (issuer-info (map-get? authorized-issuers tx-sender))
+    )
+    (asserts! (is-some issuer-info) err-invalid-issuer)
+    (asserts! (get is-active (unwrap-panic issuer-info)) err-unauthorized)
+    (asserts! (> total-certificates u0) err-unauthorized)
+    (asserts! (<= total-certificates u10) err-unauthorized)
+    (map-set skill-pathways
+      pathway-id
+      {
+        pathway-name: pathway-name,
+        description: description,
+        issuer: tx-sender,
+        total-certificates: total-certificates,
+        is-active: true,
+        created-at: stacks-block-height
+      }
+    )
+    (var-set last-pathway-id pathway-id)
+    (ok pathway-id)
+  )
+)
+
+(define-public (enroll-in-pathway (pathway-id uint))
+  (let
+    (
+      (pathway-data (map-get? skill-pathways pathway-id))
+      (existing-progress (map-get? recipient-pathway-progress {recipient: tx-sender, pathway-id: pathway-id}))
+    )
+    (asserts! (is-some pathway-data) err-not-found)
+    (asserts! (get is-active (unwrap-panic pathway-data)) err-unauthorized)
+    (asserts! (is-none existing-progress) err-already-exists)
+    (ok (map-set recipient-pathway-progress
+      {recipient: tx-sender, pathway-id: pathway-id}
+      {
+        enrolled-at: stacks-block-height,
+        completed-positions: (list),
+        is-completed: false,
+        completion-date: none
+      }
+    ))
+  )
+)
+
+(define-read-only (get-skill-pathway (pathway-id uint))
+  (map-get? skill-pathways pathway-id)
+)
+
+(define-read-only (get-recipient-pathway-progress (recipient principal) (pathway-id uint))
+  (map-get? recipient-pathway-progress {recipient: recipient, pathway-id: pathway-id})
+)
+
+(define-read-only (get-last-pathway-id)
+  (var-get last-pathway-id)
+)
