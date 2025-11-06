@@ -709,3 +709,128 @@
 (define-read-only (get-last-pathway-id)
   (var-get last-pathway-id)
 )
+
+
+(define-map certificate-skills
+  {cert-id: uint, skill-index: uint}
+  {
+    skill-name: (string-ascii 50),
+    competency-level: uint,
+    verified-hours: uint
+  }
+)
+
+(define-map certificate-skill-count
+  uint
+  uint
+)
+
+(define-map recipient-skill-aggregate
+  {recipient: principal, skill-name: (string-ascii 50)}
+  {
+    total-certificates: uint,
+    highest-competency: uint,
+    total-verified-hours: uint,
+    last-certified-at: uint
+  }
+)
+
+(define-map skill-holders
+  {skill-name: (string-ascii 50), competency-level: uint}
+  (list 100 principal)
+)
+
+(define-constant err-invalid-competency (err u109))
+(define-constant err-skill-limit-reached (err u110))
+
+(define-public (tag-certificate-skills
+  (certificate-id uint)
+  (skill-name (string-ascii 50))
+  (competency-level uint)
+  (verified-hours uint)
+)
+  (let
+    (
+      (cert-data (map-get? certificates certificate-id))
+      (current-skill-count (default-to u0 (map-get? certificate-skill-count certificate-id)))
+    )
+    (asserts! (is-some cert-data) err-not-found)
+    (let
+      (
+        (cert-info (unwrap-panic cert-data))
+      )
+      (asserts! (is-eq tx-sender (get issuer cert-info)) err-unauthorized)
+      (asserts! (<= competency-level u5) err-invalid-competency)
+      (asserts! (> competency-level u0) err-invalid-competency)
+      (asserts! (< current-skill-count u10) err-skill-limit-reached)
+      
+      (map-set certificate-skills
+        {cert-id: certificate-id, skill-index: current-skill-count}
+        {
+          skill-name: skill-name,
+          competency-level: competency-level,
+          verified-hours: verified-hours
+        }
+      )
+      
+      (map-set certificate-skill-count certificate-id (+ current-skill-count u1))
+      
+      (update-recipient-skill-aggregate 
+        (get recipient cert-info) 
+        skill-name 
+        competency-level 
+        verified-hours
+      )
+      
+      (ok current-skill-count)
+    )
+  )
+)
+
+(define-private (update-recipient-skill-aggregate
+  (recipient principal)
+  (skill-name (string-ascii 50))
+  (competency-level uint)
+  (verified-hours uint)
+)
+  (let
+    (
+      (current-aggregate (map-get? recipient-skill-aggregate {recipient: recipient, skill-name: skill-name}))
+    )
+    (match current-aggregate
+      existing-data
+        (map-set recipient-skill-aggregate
+          {recipient: recipient, skill-name: skill-name}
+          {
+            total-certificates: (+ (get total-certificates existing-data) u1),
+            highest-competency: (if (> competency-level (get highest-competency existing-data)) 
+              competency-level 
+              (get highest-competency existing-data)),
+            total-verified-hours: (+ (get total-verified-hours existing-data) verified-hours),
+            last-certified-at: stacks-block-height
+          }
+        )
+      (map-set recipient-skill-aggregate
+        {recipient: recipient, skill-name: skill-name}
+        {
+          total-certificates: u1,
+          highest-competency: competency-level,
+          total-verified-hours: verified-hours,
+          last-certified-at: stacks-block-height
+        }
+      )
+    )
+  )
+)
+
+(define-read-only (get-certificate-skills (cert-id uint) (skill-index uint))
+  (map-get? certificate-skills {cert-id: cert-id, skill-index: skill-index})
+)
+
+(define-read-only (get-certificate-skill-count (cert-id uint))
+  (default-to u0 (map-get? certificate-skill-count cert-id))
+)
+
+(define-read-only (get-recipient-skill-profile (recipient principal) (skill-name (string-ascii 50)))
+  (map-get? recipient-skill-aggregate {recipient: recipient, skill-name: skill-name})
+)
